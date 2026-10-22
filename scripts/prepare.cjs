@@ -1,0 +1,6 @@
+'use strict';
+const fs=require('node:fs');const path=require('node:path');
+const root=path.join(__dirname,'../src');
+const shim=`'use strict';\nconst {ipcRenderer}=require('electron');\nif(process.isMainFrame && location.origin==='https://tongxuetang.tongji.edu.cn'){\nlet handler;\nglobalThis.chrome={runtime:{id:'desktop',onMessage:{addListener(fn){handler=fn;}},sendMessage(message){return ipcRenderer.invoke('course:message',message);}}};\nipcRenderer.on('course:request',(_event,request)=>{if(!handler)return;try{const pending=handler(request.message,{},result=>ipcRenderer.send('course:reply',{id:request.id,result}));}catch(e){ipcRenderer.send('course:reply',{id:request.id,result:{error:e.message}});}});\n`;
+fs.writeFileSync(path.join(root,'course-preload.cjs'),shim+fs.readFileSync(path.join(root,'core.cjs'),'utf8')+'\n'+fs.readFileSync(path.join(root,'page-agent.js'),'utf8')+'\n}\n');
+console.log('Course preload bundled');

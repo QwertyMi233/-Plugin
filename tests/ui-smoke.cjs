@@ -1,0 +1,54 @@
+'use strict';
+const {spawn}=require('node:child_process');const fs=require('node:fs');const os=require('node:os');const path=require('node:path');const assert=require('node:assert/strict');
+const {_electron}=require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES+'/playwright');
+let transitionMode=false;
+const root=path.resolve(__dirname,'..'),base=path.dirname(root),deps=path.join(base,'build-deps/root'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'tongji-ui-'));
+const x=spawn(path.join(deps,'usr/bin/Xvfb'),[':92','-screen','0','1440x1100x24','-nolisten','unix','-listen','tcp','-ac'],{env:{...process.env,LD_LIBRARY_PATH:path.join(deps,'usr/lib/x86_64-linux-gnu')},stdio:['ignore','ignore','pipe']});
+let app;
+const options={executablePath:path.join(root,'node_modules/electron/dist/electron'),args:['--no-sandbox','--disable-gpu','--disable-dev-shm-usage',path.join(__dirname,'electron-entry.cjs')],env:{...process.env,DISPLAY:'127.0.0.1:92',TONGJI_SMOKE_DATA:dir},timeout:30000};
+async function launch(){app=await _electron.launch(options);const page=await app.firstWindow();await page.waitForURL('app://assistant/index.html');await page.waitForFunction(()=>!!window.assistant);return page;}
+const inputs=(id,type,labels)=>labels.map((l,i)=>`<label><input type="${type}" name="${id}" value="${i}">${l}</label>`).join(' ');
+const paper=`<!doctype html><html><body><h1>测试试卷</h1><div class="js-testpaper-question" id="question12810"><div class="testpaper-question-stem">测试单选（D）</div><ul><li>A. 选项甲</li><li>B. 选项乙</li><li>C. 选项丙</li><li>D. 选项丁</li></ul>${inputs('12810','radio',['A','B','C','D'])}</div><div class="js-testpaper-question" id="question12811"><div class="testpaper-question-stem">测试多选（AB）</div><ul><li>A. 甲</li><li>B. 乙</li><li>C. 丙</li><li>D. 丁</li></ul>${inputs('12811','checkbox',['A','B','C','D'])}</div><div class="js-testpaper-question" id="question12817"><div class="testpaper-question-stem">一加一等于二。</div><label><input type="radio" name="12817" value="1">正确</label><label><input type="radio" name="12817" value="0">错误</label></div><button id="finishPaper" onclick="document.getElementById('testpaper-finished-dialog').style.display='block'">马上交卷</button><div id="testpaper-finished-dialog" style="display:none"><button id="testpaper-finish-btn" onclick="document.body.dataset.submits=String(Number(document.body.dataset.submits||0)+1)">确认交卷</button></div></body></html>`;
+(async()=>{try{
+ await new Promise(r=>setTimeout(r,1200));let page=await launch();
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.locator('#notes').fill('重启恢复测试笔记');await page.locator('#maxCourses').fill('7');await page.locator('#save').click();await page.waitForFunction(()=>document.getElementById('toast').textContent.includes('已保存'));
+ await page.locator('summary').click();await page.locator('#urls').fill('https://tongxuetang.tongji.edu.cn/my/course/3382');await page.locator('#import').click();await page.waitForFunction(()=>document.querySelectorAll('#queue input').length===1);
+ assert.equal((await page.evaluate(()=>window.assistant.invoke('GET'))).settings.maxCourses,7);
+ await app.close();app=null;page=await launch();assert.equal(await page.locator('#notes').inputValue(),'重启恢复测试笔记');assert.equal(await page.locator('#maxCourses').inputValue(),'7');await page.waitForFunction(()=>document.querySelectorAll('#queue input').length===1);
+ await app.context().route('https://tongxuetang.tongji.edu.cn/**',async route=>{const pathname=new URL(route.request().url()).pathname;if(transitionMode){await route.fulfill({status:200,contentType:'text/html; charset=utf-8',body:pathname==='/my/course/3382'?'<html><body>已完成：2 / 2 任务</body></html>':'<html><body>已完成：0 / 2 任务<div class="task-item"><a href="/course/3381/task/123/show">测试试题</a></div></body></html>'});return;}await route.fulfill({status:200,contentType:'text/html; charset=utf-8',body:pathname==='/fixture/result'?'<html><body><h1>测试成绩</h1><span>批阅完成</span><p>恭喜您已通过本次考试。</p><div>答对 1 题 答错 0 题 未答 0 题 得分 100.0 分</div>'+paper.replace(/<!doctype html>|<\/?html>|<\/?body>/g,'')+'</body></html>':pathname==='/fixture/paper'?paper:'<!doctype html><html><body><iframe id="task-content-iframe" src="/fixture/paper" style="width:900px;height:720px"></iframe></body></html>'});});
+ const opened=app.waitForEvent('window');await page.evaluate(()=>window.assistant.invoke('OPEN_COURSE',{url:'https://tongxuetang.tongji.edu.cn/my/course/3382'}));const course=await opened;await course.frameLocator('iframe').locator('#question12817').waitFor();
+ const inspect=await page.evaluate(()=>window.assistant.invoke('INSPECT'));assert.equal(inspect.questions.length,3);assert.equal(inspect.questions[0].options[3].text,'选项丁');assert.equal(inspect.questions[1].type,'multi');assert.equal(inspect.questions[2].type,'judge');assert.equal(inspect.questions[2].options[0].value,'1');assert.equal(await course.evaluate(()=>typeof window.assistant),'undefined');
+ await course.addScriptTag({path:path.join(root,'src/core.cjs')});await course.addScriptTag({path:path.join(root,'src/page-agent.js')});
+ const answers=[{id:'question12810',selected:['D']},{id:'question12811',selected:['A','B']},{id:'question12817',selected:['正确']}];
+ await course.evaluate(async answers=>{const s=TongxuetangPage.snapshot();await TongxuetangPage.perform({type:'fill',answers,fingerprint:TongxuetangCore.fingerprint(s.questions)});},answers);
+ const after=await course.evaluate(()=>TongxuetangPage.snapshot());assert.deepEqual(after.questions.map(q=>q.selected),[['D'],['A','B'],['正确']]);
+ await course.evaluate(async answers=>{const fingerprint=TongxuetangCore.fingerprint(TongxuetangPage.snapshot().questions);await TongxuetangPage.perform({type:'openSubmit',answers,fingerprint});await TongxuetangPage.perform({type:'confirmSubmit',answers,fingerprint});},answers);
+ assert.equal(await course.frameLocator('iframe').locator('body').getAttribute('data-submits'),'1');
+ await course.frameLocator('iframe').locator('input[name="12810"][value="0"]').check();
+ const blocked=await course.evaluate(async answers=>{try{await TongxuetangPage.perform({type:'confirmSubmit',answers,fingerprint:TongxuetangCore.fingerprint(TongxuetangPage.snapshot().questions)});return false;}catch{return true;}},answers);assert.equal(blocked,true);
+
+ // Result priority with old answer controls left in the same-origin iframe.
+ await course.goto('https://tongxuetang.tongji.edu.cn/course/3382/task/44621/show');
+ await course.frameLocator('iframe').locator('#question12817').waitFor();
+ await course.frameLocator('iframe').locator('.testpaper-question-stem').first().evaluate(el=>el.textContent='批阅完成（D）');
+ await course.frameLocator('iframe').locator('body').evaluate(el=>{const node=document.createElement('div');node.textContent='批阅完成';node.hidden=true;el.append(node);});
+ assert.equal((await page.evaluate(()=>window.assistant.invoke('INSPECT'))).kind,'quiz');
+ await course.locator('iframe').evaluate(el=>el.src='/fixture/result');
+ await course.waitForFunction(()=>document.querySelector('iframe').contentDocument?.body?.innerText.includes('测试成绩'));
+ const score=await page.evaluate(()=>window.assistant.invoke('INSPECT'));assert.equal(score.kind,'result');assert.equal(score.resultEvidence,'批阅完成');assert.ok(score.questions.length>0);
+ await page.evaluate(()=>window.assistant.invoke('IMPORT',{text:'https://tongxuetang.tongji.edu.cn/my/course/3381'}));
+ await page.waitForFunction(()=>document.querySelectorAll('#queue input').length===2);
+ await page.locator('#apiKey').fill('fake-key-for-local-smoke-only');await page.locator('#remember').uncheck();
+ await page.locator('#maxCourses').fill('2');
+ assert.match(await page.locator('#planSummary').innerText(),/将运行 2 门/);
+ transitionMode=true;
+ const nextWindow=app.waitForEvent('window');const oldClosed=course.waitForEvent('close');oldClosed.catch(()=>{});
+ await page.locator('#start').click();
+ const nextCourse=await nextWindow;console.log('transition: next window opened');await nextCourse.waitForURL('https://tongxuetang.tongji.edu.cn/my/course/3381');await oldClosed;
+ const running=await page.evaluate(()=>window.assistant.invoke('GET'));assert.equal(running.settings.maxCourses,2);assert.equal(running.run.index,1);assert.equal(running.run.courses.length,2);assert.equal(running.run.status,'running');assert.ok(running.queue[0].completedAt);assert.equal(running.queue[1].completedAt,undefined);
+ await page.evaluate(()=>window.assistant.invoke('PAUSE'));
+ assert.deepEqual(errors,[]);
+ await page.screenshot({path:path.join(base,'desktop-ui-preview.png'),fullPage:true});
+ console.log(JSON.stringify({passed:true,checks:['设置保存','关闭并重启后恢复设置与队列','桌面预加载脚本读取同源 iframe','单选/多选/判断题识别','填答与确认交卷','选项变化时阻止交卷','课程网页不暴露设置接口','成绩页含旧答题控件仍优先识别','排除隐藏及题干中的成绩关键词','点击开始先保存当前上限','目录核对后打开下一课并关闭旧窗口'],screenshot:path.join(base,'desktop-ui-preview.png')}));
+}finally{if(app)await app.close();x.kill();fs.rmSync(dir,{recursive:true,force:true});}})().catch(e=>{console.error(e);process.exitCode=1;});
