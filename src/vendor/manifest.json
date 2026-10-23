@@ -1,0 +1,12 @@
+[
+  {
+    "file": "timer-hooker.user.js",
+    "sha256": "0e3e8e36b8ad5639fd55baa7ea69f6c0c99de158864971896f2f2a5f1427366a",
+    "bytes": 33439
+  },
+  {
+    "file": "everything-hook.js",
+    "sha256": "c488808cdf2fe01c1d960fe2a2656f1b4968206f9650198e4b0cfc5d84690b29",
+    "bytes": 88917
+  }
+]

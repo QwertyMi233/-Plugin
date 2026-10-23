@@ -1,0 +1,7 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict');
+const {sendJoinClick}=require('../src/join-click.cjs');
+function setup(){const events=[];return {events,wc:{getURL:()=> 'https://tongxuetang.tongji.edu.cn/course/3381',sendInputEvent:e=>events.push(e)},run:{status:'running',index:0,courses:[{id:'3381'}],joinAttempt:{courseId:'3381',stage:'initial'}},message:{courseId:'3381',stage:'initial',point:{x:120.5,y:220.5}},bounds:{width:1000,height:700}};}
+test('原生加入点击发送一次鼠标按下与抬起，坐标限定课程窗口',()=>{const {wc,run,message,bounds,events}=setup();assert.deepEqual(sendJoinClick(wc,run,message,bounds),{ok:true});assert.deepEqual(events.map(e=>e.type),['mouseMove','mouseDown','mouseUp']);assert.equal(events[1].x,120);assert.equal(events[1].y,220);assert.equal(events[1].button,'left');});
+test('暂停、课程或阶段不匹配时不发送鼠标输入',()=>{for(const change of [h=>h.run.status='paused',h=>h.message.courseId='3382',h=>h.message.stage='confirm',h=>h.run.joinAttempt=null]){const h=setup();change(h);assert.throws(()=>sendJoinClick(h.wc,h.run,h.message,h.bounds));assert.equal(h.events.length,0);}});
+test('站外页面、试卷、错误课程和窗口外坐标不发送输入',()=>{for(const change of [h=>h.wc.getURL=()=> 'https://evil.example/course/3381',h=>h.wc.getURL=()=> 'https://tongxuetang.tongji.edu.cn/course/3381/task/1/show',h=>h.wc.getURL=()=> 'https://tongxuetang.tongji.edu.cn/course/3382',h=>h.message.point.x=NaN,h=>h.message.point.y=-1,h=>h.message.point.x=1000]){const h=setup();change(h);assert.throws(()=>sendJoinClick(h.wc,h.run,h.message,h.bounds));assert.equal(h.events.length,0);}});

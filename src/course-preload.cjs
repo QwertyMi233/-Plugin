@@ -2,12 +2,13 @@
 const {ipcRenderer}=require('electron');
 if(process.isMainFrame && location.origin==='https://tongxuetang.tongji.edu.cn'){
 let handler;
+globalThis.TongxuetangDesktopJoinClick=payload=>ipcRenderer.invoke('course:join-click',payload);
 globalThis.chrome={runtime:{id:'desktop',onMessage:{addListener(fn){handler=fn;}},sendMessage(message){return ipcRenderer.invoke('course:message',message);}}};
 ipcRenderer.on('course:request',(_event,request)=>{if(!handler)return;try{const pending=handler(request.message,{},result=>ipcRenderer.send('course:reply',{id:request.id,result}));}catch(e){ipcRenderer.send('course:reply',{id:request.id,result:{error:e.message}});}});
 (function (root) {
   'use strict';
   const SITE = 'https://tongxuetang.tongji.edu.cn';
-  const DEFAULTS = { autoSubmit: true, autoJoin: false, localToken: '', notes: '', maxCalls: 20, maxCourses: 3 };
+  const DEFAULTS = { autoSubmit: true, autoJoin: true, localToken: '', notes: '', maxCalls: 20, maxCourses: 3 };
   function courseId(url) {
     try { const u = new URL(url, SITE); return u.origin === SITE ? (u.pathname.match(/^\/(?:my\/)?course\/(\d+)(?:\/|$)/) || [])[1] || null : null; } catch { return null; }
   }
@@ -52,8 +53,20 @@ ipcRenderer.on('course:request',(_event,request)=>{if(!handler)return;try{const 
     if (s.login) return pause('请在同学堂页面完成登录，再点击“继续”。');
     if (s.courseId !== current.id) return cmd('navigate', { url: home });
     if (s.kind === 'public') {
+      if (s.joinBlocked) return pause(s.joinBlocked);
       if (s.goLearn) return cmd('navigate', { url: s.goLearn });
-      return pause('这门课尚未加入学习。请在网站手动加入，再点击“继续”；插件不会处理付款或协议。');
+      if (s.joinReady === false) return wait('等待课程页面加载完成后加入学习');
+      if (!settings.autoJoin) return pause('这门课尚未加入学习。请手动加入，或在设置中开启自动加入学习。');
+      const previous = run.joinAttempt?.courseId === current.id ? run.joinAttempt : null;
+      const stage = s.joinConfirm ? 'confirm' : 'initial';
+      if (previous && (previous.stage === stage || previous.stage === 'confirm')) {
+        if (now - previous.at > 30000) return pause('加入学习后未进入学习目录，请检查课程窗口，处理后点击继续。未重复点击加入。');
+        return wait('等待平台确认加入学习');
+      }
+      if (s.canJoin) return { patch: { joinAttempt: { courseId: current.id, stage, at: now }, phase: stage === 'confirm' ? '确认免费加入学习' : '自动加入学习' }, command: { type: 'joinCourse', courseId: current.id, stage } };
+      if (previous && now - previous.at > 30000) return pause('加入学习后页面发生变化，请检查课程窗口后继续。');
+      if (now - (run.pageSince || run.startedAt) < 15000 || previous) return wait('等待加入学习入口或学习目录');
+      return pause('未找到可自动操作的加入学习入口，请检查课程窗口。');
     }
     if (s.kind === 'course') {
       if (!s.progress && !s.tasks.length && now - (run.pageSince || run.startedAt) < 15000) return wait('等待课程目录加载');
@@ -115,6 +128,33 @@ ipcRenderer.on('course:request',(_event,request)=>{if(!handler)return;try{const 
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 (() => {
+ 'use strict';
+ let settings={playbackRate:1,timerHookerEnabled:false}, last=null;
+ const watched=new WeakSet(), nativeRate=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'playbackRate');
+ const active=()=>globalThis.location?.origin==='https://tongxuetang.tongji.edu.cn'&&/^\/course\/\d+\/task\/\d+(?:\/|$)/.test(location.pathname);
+ function read(v){try{return nativeRate.get.call(v);}catch{return null;}}
+ function apply(v){
+  if(!active())return;
+  let error='';try{if(Math.abs(read(v)-settings.playbackRate)>0.001)nativeRate.set.call(v,settings.playbackRate);v.preservesPitch=true;}catch(e){error='播放器未接受预设倍速：'+e.message;}
+  const actual=read(v);last={target:settings.playbackRate,actual,error:error||(Math.abs(actual-settings.playbackRate)>0.01?'播放器限制了倍速':''),timerHookerEnabled:settings.timerHookerEnabled};
+ }
+ function scan(doc=document,seen=new Set()){
+  if(doc===document)last=null;
+  if(!active()||seen.has(doc))return;seen.add(doc);
+  for(const v of doc.querySelectorAll('video')){
+   if(!watched.has(v)){watched.add(v);for(const name of ['play','loadedmetadata','ratechange'])v.addEventListener(name,()=>apply(v));}
+   apply(v);
+  }
+  for(const f of doc.querySelectorAll('iframe'))try{if(f.contentDocument)scan(f.contentDocument,seen);}catch{}
+ }
+ function set(input){settings={playbackRate:input.playbackRate,timerHookerEnabled:input.timerHookerEnabled===true};scan();return last;}
+ globalThis.TongxuetangPlayback={set,scan,read,state:()=>last};
+ const observer=new MutationObserver(()=>scan());observer.observe(document,{childList:true,subtree:true});
+ const ticker=setInterval(()=>scan(),1500);
+ addEventListener('pagehide',()=>{observer.disconnect();clearInterval(ticker);},{once:true});
+})();
+
+(() => {
   'use strict';
   const C = globalThis.TongxuetangCore;
   function visible(el) {
@@ -155,6 +195,29 @@ ipcRenderer.on('course:request',(_event,request)=>{if(!handler)return;try{const 
     for (const d of documents) for (const el of d.querySelectorAll(selector)) if (predicate(el)) return el;
     return null;
   }
+  function joinInfo(documents) {
+    const modal = find(documents, '.modal.in,.modal.show,[role="dialog"]');
+    const scope = modal || document;
+    const control = [...scope.querySelectorAll('a,button,input[type="button"],input[type="submit"]')].find(el => visible(el) && /^(加入学习|免费加入|确认加入|确认加入学习)$/.test((el.innerText || el.value || '').trim()));
+    let blocked = null;
+    if (modal && /协议|条款|承诺书|支付|付款|订单|购买|价格|[¥￥]/.test(modal.innerText)) blocked = '加入学习出现协议或付款信息，请在课程窗口手动处理后继续。';
+    if (modal?.querySelector('input[type="password"],input[type="checkbox"]')) blocked = '加入学习需要额外确认或认证，请手动处理后继续。';
+    if (control && (control.disabled || control.getAttribute('aria-disabled') === 'true' || control.classList.contains('disabled'))) blocked = '加入学习按钮暂不可用，请检查课程窗口。';
+    if (control?.closest('form')) {
+      const form = control.closest('form');
+      if (/协议|条款|支付|付款|订单|[¥￥]/.test(form.innerText)) blocked = '加入学习表单包含协议或付款信息，请手动处理。';
+    }
+    if (control) {
+      for (const attr of ['href','data-url']) {
+        const value = control.getAttribute(attr);
+        if (value && !/^javascript:|^#/.test(value)) {
+          const url = C.safeURL(value);
+          if (!url || C.courseId(url) !== C.courseId(location.href)) blocked = '加入学习入口指向其他课程或站点，已停止。';
+        }
+      }
+    }
+    return { control, canJoin: !!control && !blocked, confirm: !!modal, blocked };
+  }
   function snapshot() {
     const documents = docs(); const path = location.pathname; const cid = C.courseId(location.href);
     const texts = documents.map(d => d.body?.innerText || '');
@@ -174,14 +237,15 @@ ipcRenderer.on('course:request',(_event,request)=>{if(!handler)return;try{const 
     }).filter(Boolean);
     const resultEvidence = documents.map(d => C.examResultMarker(resultText(d))).find(Boolean) || null;
     const go = [...document.querySelectorAll('a')].find(el => visible(el) && el.innerText.trim() === '去学习');
+    const enrollment = joinInfo(documents);
     let kind = 'unknown';
-    if (resultEvidence && /\/task\//.test(path)) kind = 'result'; else if (v) kind = 'video'; else if (qs.length && finish) kind = 'quiz'; else if (start) kind = 'quizStart'; else if (/^\/my\/course\/\d+\/?$/.test(path)) kind = 'course'; else if (/^\/course\/\d+\/?$/.test(path)) kind = 'public';
+    if (resultEvidence && /\/task\//.test(path)) kind = 'result'; else if (cid && !/\/task\//.test(path) && (enrollment.control || enrollment.blocked || go)) kind = 'public'; else if (v) kind = 'video'; else if (qs.length && finish) kind = 'quiz'; else if (start) kind = 'quizStart'; else if (/^\/my\/course\/\d+\/?$/.test(path)) kind = 'course'; else if (/^\/course\/\d+(?:\/(?:tasks|material_summary|summary))?\/?$/.test(path)) kind = 'public';
     const captions = [];
     if (v) for (const track of v.textTracks || []) { try { for (const cue of track.activeCues || []) captions.push(cue.text); } catch {} }
     return { url: location.href, courseId: cid, taskId: path.match(/\/task\/(\d+)\//)?.[1] || null, kind, title: (qdoc?.querySelector('h1')?.innerText || document.title).trim(), progress: C.parseProgress(document.body?.innerText || ''), tasks, goLearn: go ? C.safeURL(go.getAttribute('href')) : null,
       login: location.hostname === 'iam.tongji.edu.cn' || /^\/login/.test(path), blocked: /Verify you are human|Checking your browser|自动化访问已被|异常访问请验证/.test(body),
-      video: v ? { time: v.currentTime, duration: Number.isFinite(v.duration) ? v.duration : 0, paused: v.paused, ended: v.ended, readyState: v.readyState, error: v.error?.code || null } : null,
-      questions: qs, resultEvidence, confirmOpen: !!modal, confirmButton: !!modal?.querySelector('#testpaper-finish-btn'), captions: captions.join('\n'), questionCount: qs.length };
+      video: v ? { time: v.currentTime, duration: Number.isFinite(v.duration) ? v.duration : 0, paused: v.paused, ended: v.ended, readyState: v.readyState, error: v.error?.code || null, playbackRate: globalThis.TongxuetangPlayback?.read(v) ?? v.playbackRate } : null,
+      questions: qs, canJoin: enrollment.canJoin, joinReady: document.readyState === 'complete', joinConfirm: enrollment.confirm, joinBlocked: enrollment.blocked, resultEvidence, confirmOpen: !!modal, confirmButton: !!modal?.querySelector('#testpaper-finish-btn'), captions: captions.join('\n'), questionCount: qs.length };
   }
   function currentPaper(expected) {
     const s = snapshot(); if (C.fingerprint(s.questions) !== expected) throw Error('试卷发生变化，已停止操作。'); return s;
@@ -189,9 +253,29 @@ ipcRenderer.on('course:request',(_event,request)=>{if(!handler)return;try{const 
   async function perform(command) {
     const documents = docs();
     if (command.type === 'navigate') { const url = C.safeURL(command.url); if (!url) throw Error('拒绝非同学堂页面跳转'); location.assign(url); return; }
+    if (command.type === 'joinCourse') {
+      if (document.readyState !== 'complete') throw Error('课程页面尚未加载完成，请稍候再继续');
+      if (C.courseId(location.href) !== command.courseId) throw Error('课程已变化，停止加入学习');
+      const info = joinInfo(documents);
+      if (info.blocked) throw Error(info.blocked);
+      if (!info.canJoin || (info.confirm ? 'confirm' : 'initial') !== command.stage) throw Error('加入学习入口已变化，请检查课程窗口后继续');
+      if (globalThis.TongxuetangDesktopJoinClick) {
+        if (info.control.ownerDocument !== document) throw Error('加入入口位于嵌入页面，请手动处理');
+        info.control.scrollIntoView({block:'center',inline:'nearest'});
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const latest = joinInfo(docs());
+        if (latest.blocked || latest.control !== info.control || !latest.canJoin || (latest.confirm ? 'confirm' : 'initial') !== command.stage) throw Error(latest.blocked || '加入学习按钮已变化，请检查页面后继续');
+        const rect = latest.control.getBoundingClientRect(), point = {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+        const cover = document.elementFromPoint(point.x,point.y);
+        if (cover !== latest.control && !latest.control.contains(cover)) throw Error('加入学习按钮被遮挡，请检查课程窗口后继续');
+        const result = await globalThis.TongxuetangDesktopJoinClick({courseId:command.courseId,stage:command.stage,point});
+        if (!result?.ok) throw Error(result?.error || '课程窗口未接受加入学习点击');
+      } else info.control.click();
+      return;
+    }
     if (command.type === 'reload') { location.reload(); return; }
     if (command.type === 'pauseVideo') { const v = find(documents, 'video'); v?.pause(); return; }
-    if (command.type === 'play') { const v = find(documents, 'video'); if (!v) throw Error('未找到视频'); await v.play(); return; }
+    if (command.type === 'play') { const v = find(documents, 'video'); if (!v) throw Error('未找到视频'); globalThis.TongxuetangPlayback?.scan(); await v.play(); return; }
     if (command.type === 'startQuiz') { const el = find(documents, 'a', e => visible(e) && /^(开始考试|继续考试)$/.test(e.innerText.trim())); if (!el) throw Error('未找到考试入口'); el.click(); return; }
     if (command.type === 'fill') {
       const s = currentPaper(command.fingerprint);
@@ -239,11 +323,13 @@ ipcRenderer.on('course:request',(_event,request)=>{if(!handler)return;try{const 
   let busy = false;
   async function tick() {
     if (busy || document.readyState === 'loading') return; busy = true;
-    try { const s = snapshot(); const response = await chrome.runtime.sendMessage({type:'PULSE', snapshot:s}); if (response?.command) {
+    try { globalThis.TongxuetangPlayback?.scan(); const s = snapshot(); s.playback=globalThis.TongxuetangPlayback?.state(); const response = await chrome.runtime.sendMessage({type:'PULSE', snapshot:s}); if (response?.command) {
       try { await perform(response.command); } catch (e) { await chrome.runtime.sendMessage({type:'ACTION_ERROR', error:e.name === 'NotAllowedError' ? '浏览器阻止自动播放，请手动点一次播放，再继续。' : e.message}); }
     } } catch {} finally { busy = false; }
   }
   tick(); setInterval(tick, 3000);
 })();
 
+ipcRenderer.on('course:playback',(_event,settings)=>globalThis.TongxuetangPlayback.set(settings));
+ipcRenderer.invoke('course:playback-get').then(settings=>globalThis.TongxuetangPlayback.set(settings)).catch(()=>{});
 }

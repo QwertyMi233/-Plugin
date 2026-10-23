@@ -12,3 +12,7 @@ test('运行中关闭后重新打开会暂停，保留课程位置和设置',t=>
 test('设置损坏时保留副本且清晰提示',t=>{const {dir,v,s}=setup(t);fs.writeFileSync(s.file,'bad json');const next=new Store(dir,v);assert.ok(next.recoveryMessage);assert.ok(fs.readdirSync(dir).some(f=>f.includes('.unreadable-')));assert.equal(next.data.settings.provider,'deepseek');});
 test('错误服务商和模型名称被拒绝',t=>{const {s}=setup(t);assert.throws(()=>s.saveSettings({...s.data.settings,provider:'evil'}));assert.throws(()=>s.saveSettings({...s.data.settings,model:'https://evil.example/'}));});
 module.exports={vault};
+
+test('自动加入设置默认开启，可关闭并在重启后保留',()=>{
+ const directory=fs.mkdtempSync(path.join(os.tmpdir(),'tongji-join-'));try{const v=vault();const store=new Store(directory,v);assert.equal(store.data.settings.autoJoin,true);store.saveSettings({...store.data.settings,autoJoin:false});const restored=new Store(directory,v);assert.equal(restored.data.settings.autoJoin,false);}finally{fs.rmSync(directory,{recursive:true,force:true});}
+});

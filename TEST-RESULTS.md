@@ -1,8 +1,8 @@
-# v0.2.1 测试记录 · 2026-10-22
+# v0.2.4 验证记录
 
-- 30 项桌面 Node 自动化测试通过；插件另有 19 项 Node 测试及 10 项 Python 后台测试通过，均为 0 失败。
-- Node 自动化检查覆盖共享页面规则、成绩页恢复、目录核对、窗口切换请求、下一课打开失败、课程数量上限、设置保存和密钥边界。
-- 使用自有测试页面完成 11 项 Electron 窗口联调检查，包括成绩页保留旧控件、隐藏/题干关键词排除、开始前保存设置、新建下一课窗口并关闭旧窗口；没有向学校提交试卷，也没有使用真实 API 密钥。
-- 学校页面需重新扫码，当前尚未完成本次修复的线上全流程验收。
-- Windows 安装及 Windows DPAPI 实机验收尚未完成；本次在 Linux 构建 Windows x64 NSIS 安装包。
-- 安装包没有 Authenticode 发布者签名。
+- 51 项 Node/DOM 自动检查通过（原有 45 项及新增 6 项）。覆盖设置验证、重启保存、运行中改速不暂停、网页重设速度、新视频替换、原版脚本与依赖真实执行、停用复位、作用域与首页操作。
+- Linux Electron 45 headless 本地 fixture 测试通过：使用真实 sandbox/contextIsolation 课程 preload；协议拦截返回本地 HTML，不访问学校。确认主页面与同源 iframe 的 HTMLMediaElement 实际速率为预设；检查主世界脚本加载、倒数参数换算、孤立世界读取真实倍速、复位 1 倍及首页保存按钮调用。
+- 测试启动器因容器限制传入 --no-sandbox；发布版 BrowserWindow 仍保持 sandbox:true、contextIsolation:true、nodeIntegration:false，未加入 --no-sandbox。
+- Windows x64 NSIS 安装包和 macOS arm64 应用交叉构建。未在 Windows/macOS 实际启动；未验证真实课程、学时认可、扫码、AI 调用、Windows DPAPI/macOS 钥匙串或升级后的授权行为。
+- Mac 由 rcodesign 0.29.0 ad-hoc 签名，并独立检查 Mach-O 代码页、签名元数据与封存资源哈希。静态校验不等于苹果 codesign、Gatekeeper 或实机验收；无 Developer ID 签名及苹果公证。
+- 原版脚本和依赖保留元数据及许可，固定文件哈希见 src/vendor/manifest.json；包内无用户配置、Cookie 或 API 密钥。

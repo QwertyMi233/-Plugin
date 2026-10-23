@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const SITE = 'https://tongxuetang.tongji.edu.cn';
-  const DEFAULTS = { autoSubmit: true, autoJoin: false, localToken: '', notes: '', maxCalls: 20, maxCourses: 3 };
+  const DEFAULTS = { autoSubmit: true, autoJoin: true, localToken: '', notes: '', maxCalls: 20, maxCourses: 3 };
   function courseId(url) {
     try { const u = new URL(url, SITE); return u.origin === SITE ? (u.pathname.match(/^\/(?:my\/)?course\/(\d+)(?:\/|$)/) || [])[1] || null : null; } catch { return null; }
   }
@@ -46,8 +46,20 @@
     if (s.login) return pause('请在同学堂页面完成登录，再点击“继续”。');
     if (s.courseId !== current.id) return cmd('navigate', { url: home });
     if (s.kind === 'public') {
+      if (s.joinBlocked) return pause(s.joinBlocked);
       if (s.goLearn) return cmd('navigate', { url: s.goLearn });
-      return pause('这门课尚未加入学习。请在网站手动加入，再点击“继续”；插件不会处理付款或协议。');
+      if (s.joinReady === false) return wait('等待课程页面加载完成后加入学习');
+      if (!settings.autoJoin) return pause('这门课尚未加入学习。请手动加入，或在设置中开启自动加入学习。');
+      const previous = run.joinAttempt?.courseId === current.id ? run.joinAttempt : null;
+      const stage = s.joinConfirm ? 'confirm' : 'initial';
+      if (previous && (previous.stage === stage || previous.stage === 'confirm')) {
+        if (now - previous.at > 30000) return pause('加入学习后未进入学习目录，请检查课程窗口，处理后点击继续。未重复点击加入。');
+        return wait('等待平台确认加入学习');
+      }
+      if (s.canJoin) return { patch: { joinAttempt: { courseId: current.id, stage, at: now }, phase: stage === 'confirm' ? '确认免费加入学习' : '自动加入学习' }, command: { type: 'joinCourse', courseId: current.id, stage } };
+      if (previous && now - previous.at > 30000) return pause('加入学习后页面发生变化，请检查课程窗口后继续。');
+      if (now - (run.pageSince || run.startedAt) < 15000 || previous) return wait('等待加入学习入口或学习目录');
+      return pause('未找到可自动操作的加入学习入口，请检查课程窗口。');
     }
     if (s.kind === 'course') {
       if (!s.progress && !s.tasks.length && now - (run.pageSince || run.startedAt) < 15000) return wait('等待课程目录加载');

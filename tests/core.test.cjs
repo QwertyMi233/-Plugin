@@ -28,3 +28,15 @@ test('恢复时已在成绩页也返回目录核对；未知交卷结果不直�
 });
 
 test('目录控件尚未加载时先等待，不立即暂停',()=>{const r=run(),s=snap('course');assert.equal(C.decide(r,s,C.DEFAULTS,2000).patch.phase,'等待课程目录加载');assert.ok(C.decide(r,s,C.DEFAULTS,20000).pause);});
+
+test('自动加入学习：只点击一次，等待平台确认，超时暂停',()=>{
+ const r=run(),s={...snap('public'),canJoin:true};const d=C.decide(r,s,{...C.DEFAULTS,autoJoin:true},2000);assert.equal(d.command.type,'joinCourse');assert.equal(d.command.stage,'initial');Object.assign(r,d.patch);assert.equal(C.decide(r,s,C.DEFAULTS,3000).command,undefined);assert.match(C.decide(r,s,C.DEFAULTS,33001).pause,/未重复点击/);
+});
+test('普通免费确认可继续一次；协议付款与关闭自动加入时暂停',()=>{
+ const r=run();r.joinAttempt={courseId:'3382',stage:'initial',at:2000};const s={...snap('public'),canJoin:true,joinConfirm:true};const d=C.decide(r,s,C.DEFAULTS,4000);assert.equal(d.command.stage,'confirm');Object.assign(r,d.patch);assert.equal(C.decide(r,s,C.DEFAULTS,5000).command,undefined);assert.match(C.decide(r,{...s,joinBlocked:'出现付款信息'},C.DEFAULTS,6000).pause,/付款/);assert.ok(C.decide(run(),s,{...C.DEFAULTS,autoJoin:false},5000).pause);
+});
+test('加入后去学习正常进入目录；旧课程加入记录不影响下一课',()=>{
+ const r=run();r.joinAttempt={courseId:'999',stage:'initial',at:1};assert.equal(C.decide(r,{...snap('public'),canJoin:true},C.DEFAULTS,2000).command.type,'joinCourse');assert.equal(C.decide(r,{...snap('public'),goLearn:C.courseURL('3382')},C.DEFAULTS,2000).command.url,C.courseURL('3382'));assert.equal(C.decide(r,{...snap('course'),progress:{done:1,total:2},tasks:[{id:'1',type:'video',done:false,url:C.SITE+'/course/3382/task/1/show'}]},C.DEFAULTS,2000).command.type,'navigate');
+});
+
+test('加入入口已出现但页面仍加载时等待，不提前记录点击',()=>{const d=C.decide(run(),{...snap('public'),canJoin:true,joinReady:false},C.DEFAULTS,2000);assert.equal(d.command,undefined);assert.equal(d.patch.joinAttempt,undefined);assert.match(d.patch.phase,/加载完成/);});
